@@ -2674,6 +2674,8 @@
       askMe: 'Ask Assistant', listening: 'Listening...',
       added: 'Added to your order',
       orderSent: 'Thank you',
+      sending: 'Sending...',
+      sendFailed: 'Could not send — please check your connection and try again',
       confirmSub: 'Your order has been received',
       orderNum: 'Order Number', backMenu: 'Back to menu',
       portion: 'Size', full: 'Regular',
@@ -2707,6 +2709,8 @@
       askMe: 'ถามผู้ช่วย', listening: 'กำลังฟัง...',
       added: 'เพิ่มในออเดอร์แล้ว',
       orderSent: 'ขอบคุณค่ะ',
+      sending: 'กำลังส่ง...',
+      sendFailed: 'ส่งไม่สำเร็จ — กรุณาตรวจสอบการเชื่อมต่อแล้วลองใหม่',
       confirmSub: 'ได้รับออเดอร์ของคุณแล้ว',
       orderNum: 'เลขที่ออเดอร์', backMenu: 'กลับไปที่เมนู',
       portion: 'ขนาด', full: 'ปกติ',
@@ -2978,6 +2982,12 @@
   function saveOrder(order) {
     const key = order.num.replace(/[.#$[\]]/g,'_');
     fbSet('orders/' + key, order);
+  }
+  // Promise version — resolves only after Firebase confirms the write (or rejects on failure).
+  // Used at checkout so we never show "Thank you" for an order that didn't actually save.
+  function saveOrderAwait(order) {
+    const key = order.num.replace(/[.#$[\]]/g,'_');
+    return db.ref('orders/' + key).set(order);
   }
   function deleteOrder(num) {
     const key = num.replace(/[.#$[\]]/g,'_');
@@ -3767,7 +3777,18 @@
   document.getElementById('sheetBackdrop').onclick = closeCart;
 
   // ============ CHECKOUT ============
+  let _isSubmitting = false;   // guards against double-tap creating duplicate orders
   document.getElementById('checkoutBtn').onclick = async () => {
+    // FIX #1: block re-entry if a submit is already in flight (double-tap / slow network)
+    if (_isSubmitting) return;
+    if (Object.keys(cart).length === 0) return;
+    _isSubmitting = true;
+    const btn = document.getElementById('checkoutBtn');
+    const btnLabel = btn.querySelector('span') || btn;
+    const originalLabel = btnLabel.textContent;
+    btn.disabled = true;
+    btnLabel.textContent = i18n[currentLang]?.sending || 'Sending...';
+
     const batchTime = Date.now();
     const newItems = Object.values(cart).map(item => {
       const d = dishes.find(x => x.id == item.dishId);
@@ -3779,51 +3800,62 @@
     });
 
     // Find existing active orders for this session to determine the shared group id.
-    // CHANGED: we no longer merge new items into the existing order. Each "Send to Barista"
-    // creates a SEPARATE order (a "round"), so the barista sees each round as its own ticket.
-    // All rounds in a session share the same `groupId` and are merged only at billing time.
-    // For dine-in we group by table; for takeaway we group by the unique session id so two
-    // different takeaway customers never get mixed together.
+    // Each "Send to Barista" creates a SEPARATE order (a "round"). Rounds in a session
+    // share the same `groupId` and are merged only at billing time.
     const existingOrders = getOrders().filter(o => {
       if (o.type || o.status === 'billed' || o.status === 'done') return false;
       return orderMode === 'takeaway'
         ? o.takeawaySession === _takeawaySession
         : o.table === selectedTable && o.orderType !== 'takeaway';
     });
-    let orderNum;
-    // Determine group id: reuse the earliest active order's groupId (or its num), else this is round 1.
     let groupId;
     if (existingOrders.length > 0) {
       const base = existingOrders.slice().sort((a,b) => a.time - b.time)[0];
       groupId = base.groupId || base.num;
     }
-    orderNum = await getNextOrderNum();
-    if (!groupId) groupId = orderNum;          // first round — group is itself
-    const roundNo = existingOrders.length + 1;  // 1, 2, 3...
-    const order = {
-      num: orderNum,
-      groupId,                                  // links all rounds in the same session
-      round: roundNo,                           // which round this is
-      table: selectedTable || '?',
-      orderType: orderMode || 'dinein',
-      items: newItems,
-      itemCount: newItems.reduce((s,i)=>s+i.qty,0),
-      total: newItems.reduce((s,i)=>s+i.price*i.qty,0),
-      time: Date.now(), status: 'open', language: currentLang, hasNewItems: true
-    };
-    if (orderMode === 'takeaway' && _takeawaySession) order.takeawaySession = _takeawaySession;
-    saveOrder(order);
-    notifyTelegram(order, newItems);
-    if (orderMode !== 'takeaway') {
-      const t = tables.find(x => x.num === selectedTable);
-      if (t && t.status !== 'occupied') { t.status = 'occupied'; saveTables(); }
+
+    try {
+      const orderNum = await getNextOrderNum();
+      if (!groupId) groupId = orderNum;
+      const roundNo = existingOrders.length + 1;
+      const order = {
+        num: orderNum,
+        groupId,
+        round: roundNo,
+        table: selectedTable || '?',
+        orderType: orderMode || 'dinein',
+        items: newItems,
+        itemCount: newItems.reduce((s,i)=>s+i.qty,0),
+        total: newItems.reduce((s,i)=>s+i.price*i.qty,0),
+        time: Date.now(), status: 'open', language: currentLang, hasNewItems: true
+      };
+      if (orderMode === 'takeaway' && _takeawaySession) order.takeawaySession = _takeawaySession;
+
+      // FIX #2: wait for Firebase to CONFIRM the write before showing "Thank you".
+      // If the write fails (offline, rules), we throw → caught below → customer is told to retry.
+      await saveOrderAwait(order);
+
+      // Write succeeded — now safe to show confirmation and clear the cart.
+      notifyTelegram(order, newItems);
+      if (orderMode !== 'takeaway') {
+        const t = tables.find(x => x.num === selectedTable);
+        if (t && t.status !== 'occupied') { t.status = 'occupied'; saveTables(); }
+      }
+      document.getElementById('orderNum').textContent = orderNum;
+      closeCart();
+      document.getElementById('confirm').classList.add('show');
+      cart = {};
+      setTimeout(renderCart, 600);
+    } catch (e) {
+      console.error('Order submit failed:', e);
+      showToast(i18n[currentLang]?.sendFailed || 'Could not send — please try again');
+      // Cart is preserved so the customer can retry without re-adding items.
+    } finally {
+      _isSubmitting = false;
+      btn.disabled = Object.keys(cart).length === 0;
+      btnLabel.textContent = originalLabel;
+      resetIdleTimer();
     }
-    document.getElementById('orderNum').textContent = orderNum;
-    closeCart();
-    document.getElementById('confirm').classList.add('show');
-    cart = {};
-    setTimeout(renderCart, 600);
-    resetIdleTimer();
   };
   document.getElementById('confirmBack').onclick = () => {
     document.getElementById('confirm').classList.remove('show');
@@ -5180,12 +5212,21 @@
     resetIdleTimer();
   }
 
+  const IDLE_CART_TIMEOUT = 8 * 60 * 1000;   // longer grace when cart has unsent items
   function resetIdleTimer() {
     if (isAdminMode) return;
     clearIdleTimer();
     idleTimer = setTimeout(() => {
-      // Only go idle if no cart items
-      if (Object.keys(cart).length === 0) showIdle();
+      const hasCart = Object.keys(cart).length > 0;
+      if (!hasCart) {
+        showIdle();   // empty cart — safe to reset immediately
+        return;
+      }
+      // FIX #3: cart has unsent items. Previously we never went idle, so an abandoned
+      // tablet kept the previous customer's selections forever. Now we wait an additional
+      // grace period, then reset so the next customer starts clean.
+      clearIdleTimer();
+      idleTimer = setTimeout(() => { showIdle(); }, IDLE_CART_TIMEOUT - IDLE_TIMEOUT);
     }, IDLE_TIMEOUT);
   }
 
