@@ -240,8 +240,10 @@
     grid-template-columns: 1fr;
     grid-template-rows: auto 1fr auto;
     height: 100vh;
+    height: 100dvh;          /* dynamic viewport — accounts for mobile browser chrome */
     position: relative;
     z-index: 2;
+    overflow: hidden;        /* only the middle content scrolls, header+bottom stay put */
   }
 
   /* CUSTOM HEADER */
@@ -680,10 +682,13 @@
     align-items: center;
     gap: 10px;
     padding: 12px 24px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); /* iPhone home-bar */
     background: color-mix(in srgb, var(--bg) 85%, transparent);
     backdrop-filter: blur(20px);
     border-top: 1px solid var(--line-gold);
     position: relative;
+    flex-shrink: 0;          /* never collapse — always visible */
+    z-index: 50;
   }
   .bb-btn {
     padding: 11px 16px;
@@ -1931,6 +1936,54 @@
   .de-actions { display: flex; gap: 10px; margin-top: 16px; }
   .de-btn { flex: 1; padding: 12px; border: 1px solid var(--line); background: transparent; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer; color: var(--ink); }
   .de-btn.primary { background: var(--burgundy); color: var(--gold-soft); border-color: var(--gold); font-family: 'Cinzel',serif; }
+
+  /* ============ MOBILE OPTIMIZATION (phones ≤ 600px) ============ */
+  @media (max-width: 600px) {
+    /* Tighter padding so content fits narrow screens */
+    main { padding: 16px 16px 90px; }   /* extra bottom pad so last item clears the bottom bar */
+    .custom-header, .custom-footer { padding: 7px 16px; font-size: 13px; }
+
+    /* Header: smaller brand, compact controls */
+    header { padding: 10px 16px; }
+    .brand h1 { font-size: 19px; }
+    #brandTagline { font-size: 10px; }
+    .table-badge { font-size: 11px; padding: 5px 10px; }
+    .icon-btn { width: 36px; height: 36px; }
+
+    /* Hero smaller on phone */
+    .hero-text h2 { font-size: 30px; line-height: 1.15; }
+    .hero-text p { font-size: 14px; }
+
+    /* Category nav + menu grid: tighter gaps */
+    .menu-grid { gap: 12px; }
+    .categories { gap: 7px; }
+
+    /* Bottom bar: keep all 4 buttons visible */
+    .bottom-bar { gap: 6px; padding: 10px 12px; padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
+    .bb-btn { padding: 10px 11px; font-size: 12px; gap: 5px; flex-shrink: 1; min-width: 0; }
+    .bb-btn span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .bb-cart { flex-shrink: 0; }       /* cart button keeps its size */
+
+    /* Cart sheet full-width on mobile */
+    .cart-sheet { max-width: 100%; }
+
+    /* Admin dashboard: scrollable tabs, stacked modal */
+    .admin-tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .stats-row { flex-wrap: wrap; }
+    .modal-card { max-width: 94vw; }
+
+    /* Table-select grid: more compact cards */
+    .ts-grid { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 10px; }
+    .ts-mode-row { flex-direction: column; }
+    .ts-mode-btn { width: 100%; }
+  }
+
+  /* Very small phones */
+  @media (max-width: 380px) {
+    .bb-btn { padding: 9px 8px; font-size: 11px; }
+    .brand h1 { font-size: 17px; }
+    main { padding: 14px 12px 88px; }
+  }
 </style>
 </head>
 <body>
@@ -2146,7 +2199,7 @@
   <div class="bill-card">
     <div class="bill-head">
       <div class="bill-restaurant" id="billRestName">PRIMETECH CAFE</div>
-      <div class="bill-address" id="billAddress">Jomtien Beach, Pattaya · +66 00 000 0000</div>
+      <div class="bill-address" id="billAddress">Bangkok, Thailand</div>
     </div>
     <hr class="bill-divider">
     <div class="bill-meta"><strong data-i18n="table">Table</strong>: <strong id="billTableNum">07</strong></div>
@@ -2386,10 +2439,6 @@
             <option value="sans">Inter Sans-Serif (Modern Clean)</option>
           </select>
           <div class="help">Changes the display font across the entire app instantly.</div>
-        </div>
-        <div class="font-preview">
-          <div class="preview-title font-display">Phở Bò Khorovats</div>
-          <div class="preview-body">Single-origin espresso pulled fresh, served with a buttery croissant.</div>
         </div>
       </div>
 
@@ -2841,7 +2890,7 @@
     newOrder: 'primetech_new_order_v1'
   };
 
-  let featuredIds = [11, 16, 22, 42];
+  let featuredIds = [3, 8, 13, 22];   // Latte, Iced Caramel Macchiato, Strawberry Matcha, Tiramisu
   let appSettings = {
     headerText:'', footerText:'', bannerType:'none', bannerUrl:'',
     font:'cormorant', restaurantName:'PRIMETECH', tagline:'Cafe · Bangkok',
@@ -2993,7 +3042,10 @@
   db.ref('featuredIds').on('value', snap => {
     const data = snap.val();
     if (!data || !Array.isArray(data)) return;
-    featuredIds = data;
+    // Drop any ids that don't match a current dish (prevents "ghost" slots taking up the max-4 limit)
+    const cleaned = data.filter(id => dishes.some(d => d.id === id)).slice(0, 4);
+    featuredIds = cleaned;
+    if (cleaned.length !== data.length) saveFeatured();   // persist the cleanup
     renderFeatured();
   });
   db.ref('cats').on('value', snap => {
@@ -3500,9 +3552,11 @@
               <span>${i.qty}× ${esc(i.nameLocal||i.name)}</span>
               <span style="color:var(--burgundy);font-weight:500;font-family:'Helvetica Neue',sans-serif">${(i.price*i.qty).toLocaleString()} ฿</span>
             </div>`).join('')}
-            ${!allP
+            ${(o.status === 'open' && !allP)
               ? `<button onclick="window._cancelOrder('${o.num}')" style="margin-top:8px;width:100%;padding:7px;border:1px solid #c0392b;background:transparent;color:#c0392b;font-size:11px;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;border-radius:4px">✕ Cancel Order</button>`
-              : `<div style="margin-top:6px;font-size:10px;color:var(--ink-soft);font-style:italic;text-align:center">Order is being prepared — cannot cancel</div>`
+              : (o.status === 'served')
+                ? `<div style="margin-top:6px;font-size:10px;color:var(--green);font-style:italic;text-align:center">✓ Served — enjoy your order</div>`
+                : `<div style="margin-top:6px;font-size:10px;color:var(--ink-soft);font-style:italic;text-align:center">Order is being prepared — cannot cancel</div>`
             }
           </div>`;
         }).join('')}
@@ -3712,45 +3766,37 @@
       };
     });
 
+    // Find existing active orders for this table to determine the shared group id.
+    // CHANGED: we no longer merge new items into the existing order. Each "Send to Barista"
+    // creates a SEPARATE order (a "round"), so the barista sees each round as its own ticket.
+    // All rounds for a table share the same `groupId` and are merged only at billing time.
     const existingOrders = getOrders().filter(o => o.table === selectedTable && !o.type && o.status !== 'billed' && o.status !== 'done');
     let orderNum;
+    // Determine group id: reuse the earliest active order's groupId (or its num), else this is round 1.
+    let groupId;
     if (existingOrders.length > 0) {
-      orderNum = existingOrders[0].num;
-      // ATOMIC MERGE — read items from inside the transaction, not from local cache.
-      // This prevents lost-write when two tablets check out concurrently on the same table.
-      const key = orderNum.replace(/[.#$[\]]/g,'_');
-      try {
-        db.ref('orders/' + key).transaction(cur => {
-          if (!cur) return cur;                          // order vanished — abort
-          if (cur.status === 'billed' || cur.status === 'done') return cur; // closed — don't reopen
-          const merged = [...(cur.items || []), ...newItems];
-          return {
-            ...cur,
-            items: merged,
-            total: merged.reduce((s,i) => s + i.price*i.qty, 0),
-            itemCount: merged.reduce((s,i) => s + i.qty, 0),
-            hasNewItems: true
-          };
-        });
-      } catch(e) { console.warn('merge transaction failed', e); }
-      notifyTelegram({ num:orderNum, table:selectedTable, language:currentLang }, newItems);
-    } else {
-      orderNum = await getNextOrderNum();
-      const order = {
-        num: orderNum, table: selectedTable || '?',
-        orderType: orderMode || 'dinein',                     // 'dinein' | 'takeaway'
-        items: newItems,
-        itemCount: newItems.reduce((s,i)=>s+i.qty,0),
-        total: newItems.reduce((s,i)=>s+i.price*i.qty,0),
-        time: Date.now(), status: 'open', language: currentLang, hasNewItems: true
-      };
-      saveOrder(order);
-      notifyTelegram(order, newItems);
-      // Only dine-in occupies a physical table; takeaway never modifies table state
-      if (orderMode !== 'takeaway') {
-        const t = tables.find(x => x.num === selectedTable);
-        if (t && t.status !== 'occupied') { t.status = 'occupied'; saveTables(); }
-      }
+      const base = existingOrders.slice().sort((a,b) => a.time - b.time)[0];
+      groupId = base.groupId || base.num;
+    }
+    orderNum = await getNextOrderNum();
+    if (!groupId) groupId = orderNum;          // first round — group is itself
+    const roundNo = existingOrders.length + 1;  // 1, 2, 3...
+    const order = {
+      num: orderNum,
+      groupId,                                  // links all rounds at the same table
+      round: roundNo,                           // which round this is
+      table: selectedTable || '?',
+      orderType: orderMode || 'dinein',
+      items: newItems,
+      itemCount: newItems.reduce((s,i)=>s+i.qty,0),
+      total: newItems.reduce((s,i)=>s+i.price*i.qty,0),
+      time: Date.now(), status: 'open', language: currentLang, hasNewItems: true
+    };
+    saveOrder(order);
+    notifyTelegram(order, newItems);
+    if (orderMode !== 'takeaway') {
+      const t = tables.find(x => x.num === selectedTable);
+      if (t && t.status !== 'occupied') { t.status = 'occupied'; saveTables(); }
     }
     document.getElementById('orderNum').textContent = orderNum;
     closeCart();
@@ -4538,6 +4584,7 @@
   function printBill(orderNum, items, total, tableNum) {
     const w = window.open('', '_blank', 'width=340,height=700');
     const restName = appSettings.restaurantName || 'PRIMETECH CAFE';
+    const restAddr = [appSettings.address, appSettings.phone].filter(Boolean).join(' · ') || '';
     w.document.write(`
       <html><head><style>
         body { font-family: monospace; font-size: 13px; padding: 16px; max-width: 300px; }
@@ -4549,8 +4596,8 @@
         .total { font-size: 15px; font-weight: bold; }
         .thanks { text-align: center; margin-top: 14px; font-size: 12px; }
       </style></head><body>
-        <h2>${restName}</h2>
-        <p class="sub">Jomtien Beach, Pattaya · +66 00 000 0000</p>
+        <h2>${esc(restName)}</h2>
+        ${restAddr ? `<p class="sub">${esc(restAddr)}</p>` : ''}
         <div class="line"></div>
         <div class="item"><span>Order:</span><strong>${orderNum}</strong></div>
         <div class="item"><span>Table:</span><strong>${tableNum || '?'}</strong></div>
@@ -4733,11 +4780,11 @@
     if (idleSubInp) idleSubInp.value = appSettings.idleSub || 'Cafe · Bangkok · Est. 2024';
     // Theme color form
     _writeThemeForm(appSettings.theme || { bg: '#ffffff', ink: '#0a1933', btnBg: '#0a2845', btnTxt: '#ffffff' });
-    // Phone + Address (need to find inputs by position since they have no IDs)
-    const phoneInput = document.querySelector('#tab-settings input[type="text"][value*="+66"]') || document.getElementById('settingPhone');
-    const addrInput  = document.querySelector('#tab-settings input[type="text"][value*="Jomtien"]') || document.getElementById('settingAddress');
-    if (phoneInput) phoneInput.value = appSettings.phone || '+66 00 000 0000';
-    if (addrInput)  addrInput.value  = appSettings.address || 'Bangkok, Thailand';
+    // Phone + Address (have explicit IDs)
+    const phoneInput = document.getElementById('settingPhone');
+    const addrInput  = document.getElementById('settingAddress');
+    if (phoneInput) phoneInput.value = appSettings.phone || '';
+    if (addrInput)  addrInput.value  = appSettings.address || '';
     // Printer
     const pt = document.getElementById('printerType');
     const pip = document.getElementById('printerIP');
