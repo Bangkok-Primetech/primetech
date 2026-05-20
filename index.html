@@ -2016,7 +2016,7 @@
     <!-- HERO -->
     <div class="hero">
       <div class="hero-text">
-        <h2 data-i18n="hero1">Welcome.<br><em data-i18n="hero2">Բարի գալուստ</em></h2>
+        <h2 data-i18n="hero1">Welcome.<br><em data-i18n="hero2">Primetech Cafe</em></h2>
         <p data-i18n="heroSub">Specialty coffee, matcha & bakery — tap to explore, or talk to our assistant.</p>
       </div>
       <div class="hero-divider"></div>
@@ -2093,12 +2093,12 @@
 <div class="modal" id="modal">
   <div class="modal-card">
     <div class="modal-img" id="modalImg">
-      🥩
+      ☕
       <button class="modal-close" id="modalClose">✕</button>
     </div>
     <div class="modal-body">
       <h2 id="modalName">Dish<em id="modalNameNative">Native name</em></h2>
-      <div class="modal-price"><span id="modalPriceVal">285</span> <span style="font-size:14px;opacity:0.7">฿</span></div>
+      <div class="modal-price"><span id="modalPriceVal">95</span> <span style="font-size:14px;opacity:0.7">฿</span></div>
       <p class="modal-desc" id="modalDesc">Description</p>
 
       <div class="opt-group" id="modalAddonsGroup" style="display:none">
@@ -2819,17 +2819,14 @@
   //  FIREBASE CONFIG + STATE
   // ================================================================
   const _FB_CONFIG = {
-    // ⚠️ REPLACE WITH YOUR OWN FIREBASE CONFIG — see https://console.firebase.google.com
-    // 1. Create new Firebase project named "primetech-cafe"
-    // 2. Enable Realtime Database (location: asia-southeast1 for Thailand)
-    // 3. Project settings → Web app → copy config below
-    apiKey: "REPLACE_ME_API_KEY",
-    authDomain: "primetech-cafe.firebaseapp.com",
-    databaseURL: "https://primetech-cafe-default-rtdb.asia-southeast1.firebasedatabase.app",
-    projectId: "primetech-cafe",
-    storageBucket: "primetech-cafe.firebasestorage.app",
-    messagingSenderId: "000000000000",
-    appId: "1:000000000000:web:000000000000000000"
+    apiKey: "AIzaSyDiaOcvshIMDzJr-lfbNKbNSpag6aRqkRw",
+    authDomain: "primetech-204f4.firebaseapp.com",
+    databaseURL: "https://primetech-204f4-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "primetech-204f4",
+    storageBucket: "primetech-204f4.firebasestorage.app",
+    messagingSenderId: "13931379408",
+    appId: "1:13931379408:web:7af95334a2a66bb8207cd5",
+    measurementId: "G-S0XLFJ1TQ4"
   };
   firebase.initializeApp(_FB_CONFIG);
   const db = firebase.database();
@@ -2871,8 +2868,28 @@
     if (el) el.textContent = s.val() ? '🟢 Online' : '🔴 Offline';
   });
 
-  function fbSet(path, val) { try { db.ref(path).set(val); } catch(e){ console.warn(e); } }
-  function fbRemove(path) { try { db.ref(path).remove(); } catch(e){ console.warn(e); } }
+  let _fbErrorShown = false;
+  function _fbError(path, e) {
+    console.error('🔥 Firebase WRITE FAILED at "' + path + '":', e && e.message ? e.message : e);
+    // Show a one-time visible warning so staff know writes aren't saving (usually a Rules problem)
+    if (!_fbErrorShown && typeof showToast === 'function') {
+      _fbErrorShown = true;
+      showToast('⚠ Cannot save to server — check Firebase Database Rules');
+      setTimeout(() => { _fbErrorShown = false; }, 8000);
+    }
+  }
+  function fbSet(path, val) {
+    try {
+      const p = db.ref(path).set(val);
+      if (p && p.catch) p.catch(e => _fbError(path, e));
+    } catch(e){ _fbError(path, e); }
+  }
+  function fbRemove(path) {
+    try {
+      const p = db.ref(path).remove();
+      if (p && p.catch) p.catch(e => _fbError(path, e));
+    } catch(e){ _fbError(path, e); }
+  }
   function fbOnce(path, ms=5000) {
     return Promise.race([
       new Promise(res => { try { db.ref(path).once('value', s=>res(s)); } catch(e){ res({val:()=>null}); } }),
@@ -2919,8 +2936,8 @@
   function updateOrder(num, patch) {
     const key = num.replace(/[.#$[\]]/g,'_');
     try {
-      db.ref('orders/' + key).transaction(cur => cur ? {...cur, ...patch} : cur);
-    } catch(e){ console.warn(e); }
+      db.ref('orders/' + key).transaction(cur => cur ? {...cur, ...patch} : cur, (err) => { if (err) _fbError('orders/'+key, err); });
+    } catch(e){ _fbError('orders/'+key, e); }
   }
 
   // Live orders listener
@@ -3051,9 +3068,25 @@
   db.ref('adminPin').on('value', s => { if (s.val()) _adminPin = s.val(); });
 
   // Telegram
+  // SECURITY: bot token is stored at Firebase path `telegramSecret/token` with read:false rule
+  // so customer tablets can never read it (only admin tablets that explicitly fetch after PIN unlock).
+  // chatId stays in appSettings since it's not sensitive (it's just a group/user id, no auth).
+  let _telegramToken = null;    // populated lazily after admin login or on first send attempt
+
+  async function _loadTelegramToken() {
+    try {
+      const snap = await fbOnce('telegramSecret/token', 4000);
+      const v = snap.val();
+      if (v) _telegramToken = v;
+      return _telegramToken;
+    } catch(e) { return null; }
+  }
+
   async function sendTelegram(text) {
     if (appSettings.telegramEnabled !== 'yes') return;
-    const token = appSettings.telegramToken;
+    // Lazily fetch token if we don't have it cached yet
+    if (!_telegramToken) await _loadTelegramToken();
+    const token = _telegramToken;
     const chatId = appSettings.telegramChatId;
     if (!token || !chatId) return;
     try {
@@ -4715,8 +4748,14 @@
     const tTok = document.getElementById('telegramToken');
     const tCid = document.getElementById('telegramChatId');
     if (tEn) tEn.value = appSettings.telegramEnabled || 'no';
-    if (tTok) tTok.value = appSettings.telegramToken || '';
     if (tCid) tCid.value = appSettings.telegramChatId || '';
+    // Fetch token from secure path. _telegramToken may already be cached from a prior load.
+    if (tTok) {
+      tTok.value = _telegramToken || '';
+      if (!_telegramToken) {
+        _loadTelegramToken().then(t => { if (t && document.getElementById('telegramToken')) document.getElementById('telegramToken').value = t; });
+      }
+    }
     // Logo preview
     const prev = document.getElementById('logoPreview');
     if (appSettings.logoData) prev.innerHTML = `<img src="${appSettings.logoData}" style="width:100%;height:100%;object-fit:contain">`;
@@ -4890,8 +4929,17 @@
   const saveTelegramBtn = document.getElementById('saveTelegram');
   if (saveTelegramBtn) saveTelegramBtn.onclick = () => {
     appSettings.telegramEnabled = document.getElementById('telegramEnabled').value;
-    appSettings.telegramToken   = document.getElementById('telegramToken').value.trim();
+    // chatId in settings (not sensitive — just a destination id)
     appSettings.telegramChatId  = document.getElementById('telegramChatId').value.trim();
+    // SECURITY: token goes to a separate Firebase path with read:false rule so
+    // customer tablets cannot ever read it. We also strip it from appSettings if present
+    // (from any legacy save) before writing settings.
+    delete appSettings.telegramToken;
+    const tokenVal = document.getElementById('telegramToken').value.trim();
+    if (tokenVal) {
+      _telegramToken = tokenVal;
+      fbSet('telegramSecret/token', tokenVal);
+    }
     saveSettings();
     showToast('Telegram settings saved · synced to all devices');
   };
