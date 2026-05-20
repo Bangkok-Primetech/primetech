@@ -2863,6 +2863,7 @@
   let isAdminMode = false;
   let editingNoteKey = null;
   let assignTargetOrder = null;
+  let _takeawaySession = null;   // unique id per takeaway customer session
 
   // ================================================================
   //  FIREBASE CONFIG + STATE
@@ -3321,8 +3322,14 @@
   }
 
   function selectTakeaway() {
+    // Fresh session — clear any leftover cart/state from a previous customer
+    cart = {};
+    modalOpts = { size: 'full', spice: 0, toppings: [], note: '' };
     selectedTable = 'TAKEAWAY';
     orderMode = 'takeaway';
+    // Unique session id so this takeaway customer only sees THEIR own active order,
+    // not every unpaid takeaway order in the system.
+    _takeawaySession = 'TA-' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
     currentLang = tsCurrentLang;
     document.getElementById('tableBadgeNum').textContent = '🥡 Takeaway';
     setLang(currentLang);
@@ -3331,6 +3338,7 @@
     const ab = document.getElementById('askBillBtn');
     if (cw) cw.style.display = 'none';                  // no waiter for takeaway
     if (ab) ab.textContent = currentLang === 'th' ? '✓ ชำระเงิน' : '✓ Pay';  // bill = pay button
+    renderCart();                                       // reflect the cleared cart immediately
     document.getElementById('tableSelect').classList.add('hide');
     setTimeout(() => {
       document.getElementById('tableSelect').classList.remove('show', 'hide');
@@ -3339,6 +3347,9 @@
   }
 
   function selectTable(num) {
+    // Fresh session — clear any leftover cart/state from a previous customer
+    cart = {};
+    modalOpts = { size: 'full', spice: 0, toppings: [], note: '' };
     selectedTable = num;
     orderMode = 'dinein';
     currentLang = tsCurrentLang;
@@ -3348,9 +3359,12 @@
     document.getElementById('tableBadgeNum').textContent = '№ ' + num;
     // Restore dine-in UI (in case previous customer was takeaway)
     const cw = document.getElementById('callWaiterBtn');
+    const ab = document.getElementById('askBillBtn');
     if (cw) cw.style.display = '';
+    if (ab) ab.textContent = i18n[currentLang]?.askBill || 'Bill';   // restore Bill label
     // Apply chosen language
     setLang(currentLang);
+    renderCart();                                       // reflect the cleared cart immediately
     // Hide table select, show app directly
     document.getElementById('tableSelect').classList.add('hide');
     setTimeout(() => {
@@ -3529,9 +3543,7 @@
     let newTotal = 0;
     Object.values(cart).forEach(i => newTotal += i.price * i.qty);
 
-    const activeOrders = selectedTable
-      ? _orders.filter(o => o.table===selectedTable && !o.type && o.status!=='billed' && o.status!=='done')
-      : [];
+    const activeOrders = selectedTable ? getSessionOrders() : [];
     const activeTotal = activeOrders.reduce((s,o)=>s+(o.total||0),0);
     const totalCount = ids.reduce((s,k)=>s+cart[k].qty,0) + activeOrders.reduce((s,o)=>s+(o.itemCount||0),0);
     document.getElementById('cartCount').textContent = totalCount;
@@ -3766,11 +3778,18 @@
       };
     });
 
-    // Find existing active orders for this table to determine the shared group id.
+    // Find existing active orders for this session to determine the shared group id.
     // CHANGED: we no longer merge new items into the existing order. Each "Send to Barista"
     // creates a SEPARATE order (a "round"), so the barista sees each round as its own ticket.
-    // All rounds for a table share the same `groupId` and are merged only at billing time.
-    const existingOrders = getOrders().filter(o => o.table === selectedTable && !o.type && o.status !== 'billed' && o.status !== 'done');
+    // All rounds in a session share the same `groupId` and are merged only at billing time.
+    // For dine-in we group by table; for takeaway we group by the unique session id so two
+    // different takeaway customers never get mixed together.
+    const existingOrders = getOrders().filter(o => {
+      if (o.type || o.status === 'billed' || o.status === 'done') return false;
+      return orderMode === 'takeaway'
+        ? o.takeawaySession === _takeawaySession
+        : o.table === selectedTable && o.orderType !== 'takeaway';
+    });
     let orderNum;
     // Determine group id: reuse the earliest active order's groupId (or its num), else this is round 1.
     let groupId;
@@ -3783,7 +3802,7 @@
     const roundNo = existingOrders.length + 1;  // 1, 2, 3...
     const order = {
       num: orderNum,
-      groupId,                                  // links all rounds at the same table
+      groupId,                                  // links all rounds in the same session
       round: roundNo,                           // which round this is
       table: selectedTable || '?',
       orderType: orderMode || 'dinein',
@@ -3792,6 +3811,7 @@
       total: newItems.reduce((s,i)=>s+i.price*i.qty,0),
       time: Date.now(), status: 'open', language: currentLang, hasNewItems: true
     };
+    if (orderMode === 'takeaway' && _takeawaySession) order.takeawaySession = _takeawaySession;
     saveOrder(order);
     notifyTelegram(order, newItems);
     if (orderMode !== 'takeaway') {
@@ -3817,8 +3837,19 @@
     showToast(i18n[currentLang].waiterCalled);
   };
 
+  // Returns all active (unbilled) orders belonging to the CURRENT customer session.
+  // Dine-in: matches by table. Takeaway: matches by unique session id.
+  function getSessionOrders() {
+    return getOrders().filter(o => {
+      if (o.type || o.status === 'billed' || o.status === 'done') return false;
+      return orderMode === 'takeaway'
+        ? o.takeawaySession === _takeawaySession
+        : o.table === selectedTable && o.orderType !== 'takeaway';
+    });
+  }
+
   document.getElementById('askBillBtn').onclick = () => {
-    const tableOrders = getOrders().filter(o => o.table === selectedTable && !o.type && o.status !== 'billed' && o.status !== 'done');
+    const tableOrders = getSessionOrders();
     if (!tableOrders.length && Object.keys(cart).length === 0) { showToast('No items ordered yet'); return; }
     let allItems = [], grandTotal = 0;
     let orderNum = tableOrders.length ? tableOrders[0].num : '—';
@@ -3863,7 +3894,7 @@
   document.getElementById('billConfirmBtn').onclick = () => {
     if (!window._billData) return;
     const { orderNum, total } = window._billData;
-    const tableOrders = _orders.filter(o => o.table === selectedTable && !o.type && o.status !== 'billed' && o.status !== 'done');
+    const tableOrders = getSessionOrders();
     tableOrders.forEach(o => updateOrder(o.num, { status: 'bill_requested', billTime: Date.now() }));
     saveOrder({ num:'BILL-'+Date.now(), table:selectedTable||'?', type:'bill', time:Date.now(), itemCount:1, total, orderRef:orderNum, status:'alert' });
     document.getElementById('billModal').classList.remove('show');
@@ -5126,7 +5157,9 @@
     }
     selectedTable = null;
     orderMode = null;          // reset so next customer sees the mode picker again
+    _takeawaySession = null;   // clear takeaway session for next customer
     cart = {};
+    modalOpts = { size: 'full', spice: 0, toppings: [], note: '' };
     document.getElementById('tableSelect').classList.remove('show', 'hide');
     document.getElementById('confirm').classList.remove('show');
     document.getElementById('billModal').classList.remove('show');
